@@ -93,6 +93,7 @@ function displayResult(result, nrows, ncols) {
     const errorBox = document.getElementById('error-box');
     const gbOutput = document.getElementById('gb-output');
     const syzOutput = document.getElementById('syz-output');
+    const syzContent = document.getElementById('syz-content');
 
     outputSection.style.display = 'block';
 
@@ -121,24 +122,29 @@ function displayResult(result, nrows, ncols) {
         const ngens = result.ngens;
         const nsyz = result.nsyz;
 
-        let lines = [];
-        lines.push(`${ngens} generators, ${nsyz} syzygy${nsyz === 1 ? '' : 'ies'}`);
-        lines.push('');
+        syzContent.innerHTML = '';
+        const summary = document.createElement('div');
+        summary.className = 'syz-summary';
+        summary.textContent = `${ngens} x ${nsyz} syzygy matrix (rows = ${ncols} input columns)`;
+        syzContent.appendChild(summary);
 
-        // Display as matrix columns.
-        for (let k = 0; k < nsyz; k++) {
-            lines.push(`Syzygy ${k + 1}:`);
-            for (let i = 0; i < ngens; i++) {
-                const entry = result.syz[i][k];
-                lines.push(`  [${i}] = ${entry}`);
+        const matrix = document.createElement('div');
+        matrix.className = 'matrix-output';
+        matrix.style.gridTemplateColumns = `repeat(${nsyz}, minmax(80px, auto))`;
+
+        for (let i = 0; i < ngens; i++) {
+            for (let k = 0; k < nsyz; k++) {
+                const cell = document.createElement('div');
+                cell.className = 'matrix-cell';
+                cell.textContent = result.syz[i][k];
+                matrix.appendChild(cell);
             }
-            if (k < nsyz - 1) lines.push('');
         }
 
-        document.getElementById('syz-content').textContent = lines.join('\n');
+        syzContent.appendChild(matrix);
     } else {
         syzOutput.style.display = 'block';
-        document.getElementById('syz-content').textContent = 'No syzygies (kernel is zero).';
+        syzContent.textContent = 'No syzygies (kernel is zero).';
     }
 }
 
