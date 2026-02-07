@@ -197,6 +197,51 @@ button {
     border: 1px solid #eee;
 }
 
+.syz-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.syz-summary {
+    font-weight: 600;
+    color: #444;
+}
+
+.matrix-output {
+    display: inline-grid;
+    gap: 6px;
+    padding: 10px 14px;
+    border-left: 3px solid #333;
+    border-right: 3px solid #333;
+    position: relative;
+    background: #f8f8f8;
+    border-radius: 4px;
+}
+
+.matrix-output::before,
+.matrix-output::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: #333;
+}
+.matrix-output::before { left: -3px; }
+.matrix-output::after { right: -3px; }
+
+.matrix-cell {
+    min-width: 80px;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    text-align: center;
+    background: #fff;
+}
+
 .error-box {
     background: #fff0f0;
     border: 1px solid #ffcccc;
