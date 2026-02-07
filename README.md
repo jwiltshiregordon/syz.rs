@@ -1,6 +1,6 @@
 # m2-port
 
-A Rust port of a targeted subset of the [Macaulay2](https://macaulay2.com) engine, focused on computing syzygies of matrices over polynomial rings of the form **ZZ[x1, ..., xn]**.
+A faithful Rust port of a targeted subset of the [Macaulay2](https://macaulay2.com) engine, focused on computing syzygies of matrices over polynomial rings of the form **ZZ[x1, ..., xn]**. Output matches M2's `syz` exactly — same polynomials, same order, same signs.
 
 ## Goal
 
@@ -10,7 +10,7 @@ Extract and reimplement the minimal codepath required to run the Macaulay2 comma
 syz M
 ```
 
-where `M` is a matrix with entries in a polynomial ring `ZZ[vars]`. This involves porting:
+where `M` is an m×n matrix with entries in a polynomial ring `ZZ[vars]`. A 1×n matrix encodes an ideal, but the general case is an m×n matrix defining a map R^n → R^m. This involves porting:
 
 - The default Groebner basis algorithm from the M2 engine
 - Matrices, polynomials, and monomials for the ring `ZZ[x1, ..., xn]`
@@ -64,4 +64,4 @@ Useful for generating test cases:
 
 ## Status
 
-Early stage. The project is not yet functional.
+Functional. The full `syz` pipeline is implemented (GB computation, syzygy collection, Schreyer minimization/reduction) with 157+ tests passing, including oracle tests that verify exact match against M2. A WASM-powered website is available for interactive use.

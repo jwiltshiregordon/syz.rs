@@ -7,7 +7,8 @@
       "Bash(cargo test:*)",
       "Bash(M2:*)",
       "Bash(cargo run:*)",
-      "Bash(wasm-pack build:*)"
+      "Bash(wasm-pack build:*)",
+      "Bash(wc:*)"
     ]
   }
 }
