@@ -1,0 +1,68 @@
+
+i1 : load "tests/oracle/zz.m2"
+=== SYZYGY ===
+syzygy(6, 4) = (-2, 3)
+  check: 0
+syzygy(12, 8) = (-2, 3)
+  check: 0
+syzygy(7, 3) = (-3, 7)
+  check: 0
+syzygy(1, 1) = (1, -1)
+  check: 0
+syzygy(0, 5) = (1, 0)
+  check: 0
+syzygy(5, 0) = (0, 1)
+  check: 0
+syzygy(-6, 4) = (-2, -3)
+  check: 0
+syzygy(6, -4) = (2, 3)
+  check: 0
+syzygy(-6, -4) = (2, -3)
+  check: 0
+syzygy(15, 10) = (-2, 3)
+  check: 0
+syzygy(100, 35) = (-7, 20)
+  check: 0
+=== GCD ===
+gcd(6, 4) = 2
+gcd(12, 8) = 4
+gcd(7, 3) = 1
+gcd(0, 5) = 5
+gcd(5, 0) = 5
+gcd(1, 1) = 1
+gcd(-6, 4) = 2
+gcd(15, 10) = 5
+gcd(100, 35) = 5
+gcd(0, 0) = 0
+=== DIVREM ===
+divrem(17, 5) = (3, 2)
+  check: 17 == 17
+divrem(-17, 5) = (-4, 3)
+  check: -17 == -17
+divrem(17, -5) = (-3, 2)
+  check: 17 == 17
+divrem(-17, -5) = (4, 3)
+  check: -17 == -17
+divrem(10, 3) = (3, 1)
+  check: 10 == 10
+divrem(-10, 3) = (-4, 2)
+  check: -10 == -10
+divrem(0, 7) = (0, 0)
+  check: 0 == 0
+divrem(7, 1) = (7, 0)
+  check: 7 == 7
+divrem(15, 5) = (3, 0)
+  check: 15 == 15
+=== CONTENT ===
+poly: 6*x^2+4*x*y+2
+  content: 2
+  primitive: 3*x^2+2*x*y+1
+poly: -15*x^2*y+10*x-5
+  content: 5
+  primitive: -3*x^2*y+2*x-1
+poly: 7*x+3*y
+  content: 1
+  primitive: 7*x+3*y
+poly: x+y+z
+  content: 1
+  primitive: x+y+z

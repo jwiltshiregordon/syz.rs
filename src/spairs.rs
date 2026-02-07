@@ -1,0 +1,613 @@
+//! S-pair management for Buchberger's algorithm over ZZ.
+//!
+//! Over ZZ, S-pair management has extra complexity:
+//! - GCD S-pairs: when syzygy coefficients both have |u|>1 and |v|>1,
+//!   we also create a GCD S-pair using extended_gcd.
+//! - Weak generators criterion: Buchberger criterion for ZZ uses "weak
+//!   membership" to prune redundant S-pairs.
+
+use crate::monomial::Monomial;
+use crate::poly::Poly;
+use crate::zz::{gcd, syzygy};
+
+/// Type of an S-pair.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SPairType {
+    /// Standard S-pair from syzygy of lead coefficients.
+    SPair,
+    /// GCD S-pair over ZZ (uses extended_gcd).
+    GcdZZ,
+    /// Generator (initial input polynomial).
+    Gen,
+}
+
+/// A GB element with cached metadata.
+#[derive(Clone, Debug)]
+pub struct GBElem {
+    pub poly: Poly,
+    pub syz: Poly,
+    /// Sugar degree: max total degree among all terms.
+    pub deg: i32,
+    /// Ecart: deg - lead_term_degree.
+    pub gap: i32,
+    /// Cached lead monomial.
+    pub lead: Monomial,
+    /// Cached lead component.
+    pub lead_comp: usize,
+    /// Cached lead coefficient.
+    pub lead_coeff: i64,
+}
+
+impl GBElem {
+    /// Create a GBElem from a polynomial and its syzygy vector.
+    /// Panics if the polynomial is zero.
+    pub fn new(poly: Poly, syz: Poly) -> Self {
+        assert!(!poly.is_zero(), "GBElem::new: polynomial must be nonzero");
+        let lead = poly.lead_monom().clone();
+        let lead_comp = poly.lead_comp();
+        let lead_coeff = poly.lead_coeff();
+        let lead_deg = lead.total_degree();
+        let deg = poly.terms().iter().map(|t| t.monom.total_degree()).max().unwrap();
+        let gap = deg - lead_deg;
+        GBElem { poly, syz, deg, gap, lead, lead_comp, lead_coeff }
+    }
+}
+
+/// An S-pair to be processed by the Buchberger loop.
+#[derive(Clone, Debug)]
+pub struct SPair {
+    pub kind: SPairType,
+    /// Sugar degree of this S-pair.
+    pub deg: i32,
+    /// LCM of lead monomials (for SPair/GcdZZ types).
+    pub lcm: Monomial,
+    /// Component of the lead terms.
+    pub comp: usize,
+    /// Index of first GB element.
+    pub i: usize,
+    /// Index of second GB element.
+    pub j: usize,
+}
+
+impl SPair {
+    /// Create a standard S-pair between gb[i] and gb[j].
+    ///
+    /// Sugar degree formula (matching M2's `exponents_lcm`):
+    ///   deg = gb[i].deg + (lcm.total_degree() - gb[i].lead.total_degree())
+    ///         + max(gb[j].gap - gb[i].gap, 0)
+    pub fn new_pair(i: usize, j: usize, gb: &[GBElem]) -> SPair {
+        let lcm = gb[i].lead.lcm(&gb[j].lead);
+        let deg = Self::sugar_degree(&lcm, i, j, gb);
+        SPair { kind: SPairType::SPair, deg, lcm, comp: gb[i].lead_comp, i, j }
+    }
+
+    /// Create a GCD S-pair between gb[i] and gb[j].
+    pub fn new_gcd_zz(i: usize, j: usize, gb: &[GBElem]) -> SPair {
+        let lcm = gb[i].lead.lcm(&gb[j].lead);
+        let deg = Self::sugar_degree(&lcm, i, j, gb);
+        SPair { kind: SPairType::GcdZZ, deg, lcm, comp: gb[i].lead_comp, i, j }
+    }
+
+    /// Create a generator S-pair (placeholder for initial polynomials).
+    pub fn new_gen(i: usize, gb: &[GBElem]) -> SPair {
+        SPair {
+            kind: SPairType::Gen,
+            deg: gb[i].deg,
+            lcm: gb[i].lead.clone(),
+            comp: gb[i].lead_comp,
+            i,
+            j: i,
+        }
+    }
+
+    /// Compute sugar degree for S-pair (i, j) with the given LCM.
+    fn sugar_degree(lcm: &Monomial, i: usize, j: usize, gb: &[GBElem]) -> i32 {
+        let extra = lcm.total_degree() - gb[i].lead.total_degree();
+        let gap_diff = if gb[j].gap > gb[i].gap { gb[j].gap - gb[i].gap } else { 0 };
+        gb[i].deg + extra + gap_diff
+    }
+}
+
+/// Minimize S-pairs over ZZ.
+///
+/// For each pair (i,j), compute syzygy(lc(gb[i]), lc(gb[j])).
+/// - If both |u| > 1 and |v| > 1, create a GCD S-pair too.
+/// - Apply `find_weak_generators` to prune redundant regular S-pairs.
+pub fn minimize_pairs_zz(pairs: Vec<SPair>, gb: &[GBElem]) -> Vec<SPair> {
+    if pairs.is_empty() {
+        return pairs;
+    }
+
+    let mut gcd_pairs = Vec::new();
+    let mut regular_pairs = Vec::new();
+    let mut coeffs = Vec::new();
+    let mut lcms: Vec<Monomial> = Vec::new();
+
+    for sp in &pairs {
+        let (u, v) = syzygy(gb[sp.i].lead_coeff, gb[sp.j].lead_coeff);
+
+        // If both |u| > 1 and |v| > 1, create a GCD S-pair.
+        if u.abs() > 1 && v.abs() > 1 {
+            gcd_pairs.push(SPair::new_gcd_zz(sp.i, sp.j, gb));
+        }
+
+        coeffs.push(u);
+        lcms.push(sp.lcm.clone());
+        regular_pairs.push(sp.clone());
+    }
+
+    // Apply weak generators criterion to regular pairs.
+    let kept = find_weak_generators(&coeffs, &lcms);
+
+    let mut result: Vec<SPair> = kept.into_iter().map(|idx| regular_pairs[idx].clone()).collect();
+    result.extend(gcd_pairs);
+    result
+}
+
+/// Find the minimal set of S-pairs not weakly generated by others.
+///
+/// A pair is "weakly generated" if its syzygy coefficient is divisible by
+/// the GCD of coefficients of all kept entries whose LCM divides this LCM.
+///
+/// Returns indices of kept pairs.
+fn find_weak_generators(coeffs: &[i64], lcms: &[Monomial]) -> Vec<usize> {
+    if coeffs.is_empty() {
+        return Vec::new();
+    }
+
+    // Sort indices by (lcm lex, |coeff| ascending).
+    let mut indices: Vec<usize> = (0..coeffs.len()).collect();
+    indices.sort_by(|&a, &b| {
+        lcms[a].cmp_lex(&lcms[b])
+            .then_with(|| coeffs[a].abs().cmp(&coeffs[b].abs()))
+    });
+
+    let mut kept: Vec<usize> = Vec::new();
+
+    for &idx in &indices {
+        let c = coeffs[idx].abs();
+        if c == 0 {
+            continue;
+        }
+
+        // Compute GCD of coefficients of all kept entries whose LCM divides this one.
+        let mut g: i64 = 0;
+        for &k in &kept {
+            if lcms[k].divides(&lcms[idx]) {
+                g = gcd(g, coeffs[k].abs());
+                if g == 1 {
+                    break;
+                }
+            }
+        }
+
+        // If g divides c, this pair is weakly generated — skip it.
+        if g != 0 && c % g == 0 {
+            continue;
+        }
+
+        kept.push(idx);
+    }
+
+    kept
+}
+
+/// Collection of pending S-pairs.
+pub struct SPairSet {
+    pairs: Vec<SPair>,
+}
+
+impl SPairSet {
+    pub fn new() -> Self {
+        SPairSet { pairs: Vec::new() }
+    }
+
+    /// Add S-pairs to the set.
+    pub fn insert(&mut self, pairs: Vec<SPair>) {
+        self.pairs.extend(pairs);
+    }
+
+    /// Minimum degree among pending pairs.
+    pub fn next_degree(&self) -> Option<i32> {
+        self.pairs.iter().map(|sp| sp.deg).min()
+    }
+
+    /// Remove and return all pairs of the given degree, sorted by (kind, lcm).
+    pub fn extract_degree(&mut self, deg: i32) -> Vec<SPair> {
+        let mut extracted = Vec::new();
+        let mut remaining = Vec::new();
+
+        for sp in self.pairs.drain(..) {
+            if sp.deg == deg {
+                extracted.push(sp);
+            } else {
+                remaining.push(sp);
+            }
+        }
+
+        self.pairs = remaining;
+
+        // Sort: Gen first, then SPair, then GcdZZ; within same kind, by lcm lex.
+        extracted.sort_by(|a, b| {
+            kind_order(a.kind).cmp(&kind_order(b.kind))
+                .then_with(|| a.lcm.cmp_lex(&b.lcm))
+        });
+
+        extracted
+    }
+
+    pub fn len(&self) -> usize {
+        self.pairs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+}
+
+fn kind_order(k: SPairType) -> u8 {
+    match k {
+        SPairType::Gen => 0,
+        SPairType::SPair => 1,
+        SPairType::GcdZZ => 2,
+    }
+}
+
+// We need cmp_lex on Monomial — add it here. Actually let's check if it exists.
+// It doesn't exist yet, so we need to add it to Monomial. But to avoid modifying
+// monomial.rs unnecessarily, we can implement the comparison inline using exponents.
+
+impl Monomial {
+    /// Lexicographic comparison (for S-pair sorting, not term ordering).
+    pub fn cmp_lex(&self, other: &Monomial) -> std::cmp::Ordering {
+        assert_eq!(self.nvars(), other.nvars());
+        for i in 0..self.nvars() {
+            match self.exponents()[i].cmp(&other.exponents()[i]) {
+                std::cmp::Ordering::Equal => continue,
+                other_ord => return other_ord,
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::monomial::Monomial;
+    use crate::poly::{Poly, Term};
+
+    fn m(exps: &[i32]) -> Monomial {
+        Monomial::new(exps.to_vec())
+    }
+
+    fn t(coeff: i64, exps: &[i32], comp: usize) -> Term {
+        Term::new(coeff, m(exps), comp)
+    }
+
+    fn p(terms: &[(i64, &[i32], usize)]) -> Poly {
+        Poly::from_terms(
+            terms.iter().map(|(c, e, comp)| t(*c, e, *comp)).collect(),
+        )
+    }
+
+    // ===== GBElem tests =====
+
+    #[test]
+    fn test_gbelem_new_homogeneous() {
+        // f = 3*x^2*y + 2*x*y^2 (homogeneous, degree 3)
+        let f = p(&[(3, &[2, 1, 0], 0), (2, &[1, 2, 0], 0)]);
+        let syz = Poly::zero();
+        let elem = GBElem::new(f, syz);
+        assert_eq!(elem.deg, 3);
+        assert_eq!(elem.gap, 0); // homogeneous: all terms same degree
+        assert_eq!(elem.lead, m(&[2, 1, 0]));
+        assert_eq!(elem.lead_comp, 0);
+        assert_eq!(elem.lead_coeff, 3);
+    }
+
+    #[test]
+    fn test_gbelem_new_inhomogeneous() {
+        // f = x^2 + y (deg=2 for x^2, deg=1 for y, sugar deg = 2)
+        // lead = x^2 (deg 2), gap = 2 - 2 = 0
+        let f = p(&[(1, &[2, 0, 0], 0), (1, &[0, 1, 0], 0)]);
+        let syz = Poly::zero();
+        let elem = GBElem::new(f, syz);
+        assert_eq!(elem.deg, 2);
+        assert_eq!(elem.gap, 0);
+        assert_eq!(elem.lead_coeff, 1);
+    }
+
+    #[test]
+    fn test_gbelem_new_with_ecart() {
+        // f = y + x^2*z (in grevlex with 3 vars)
+        // Terms: x^2*z (deg 3) > y (deg 1)
+        // lead = x^2*z (deg 3), sugar deg = 3, gap = 3 - 3 = 0
+        // Wait, that has lead degree = sugar degree.
+        //
+        // Let's use: f = y^3 + x*z (3 vars)
+        // y^3 has deg 3, x*z has deg 2
+        // grevlex: y^3 (deg 3) > xz (deg 2), so lead = y^3
+        // sugar deg = 3, gap = 3 - 3 = 0. Still no gap.
+        //
+        // For gap > 0: lead term must not be the highest-degree term.
+        // This happens when we build S-polys. E.g. f = x + y^2
+        // lead = x (deg 1, since grevlex puts x > y^2 only if deg(x) > deg(y^2)...
+        // no, deg(x) = 1 < deg(y^2) = 2, so y^2 > x in grevlex.
+        //
+        // So f = x + y^2: lead = y^2 (deg 2), sugar deg = 2, gap = 0.
+        // Actually for gap > 0, we need the polynomial to have a term with higher
+        // degree than the lead, which can't happen since lead IS the highest-degree term
+        // in grevlex... unless we're in a module with component ordering.
+        //
+        // In Schreyer order for modules, the lead term is determined by component first,
+        // so the lead monomial might not have maximal degree. But in our current ordering
+        // (component ascending, grevlex descending), the lead term IS in the lowest
+        // component with the highest grevlex monomial, which has the highest degree.
+        //
+        // Actually gap = max_degree - lead_degree, and in standard grevlex the lead
+        // term has the highest degree, so gap = 0 always for ring elements.
+        // Gap > 0 happens for module elements where component ordering puts a
+        // lower-degree term in a lower component first.
+        //
+        // Let's test with a module element:
+        // f = 1*e_0 + y^2*e_1 (2 vars, 2 components)
+        // Sorted: e_0 term comes first (comp 0 < comp 1)
+        // lead = (1, comp=0), deg = 2 (from y^2 term), gap = 2 - 0 = 2
+        let f = Poly::from_terms(vec![
+            Term::new(1, m(&[0, 0]), 0),  // 1*e_0
+            Term::new(1, m(&[0, 2]), 1),  // y^2*e_1
+        ]);
+        let syz = Poly::zero();
+        let elem = GBElem::new(f, syz);
+        assert_eq!(elem.deg, 2);
+        assert_eq!(elem.gap, 2); // max deg 2, lead deg 0
+        assert_eq!(elem.lead_comp, 0);
+    }
+
+    // ===== SPair::new_pair tests =====
+
+    #[test]
+    fn test_spair_new_pair_basic() {
+        // f = x^2 + y, g = x*y + z (3 vars)
+        // f: lead = x^2 (deg 2), sugar = 2, gap = 0
+        // g: lead = xy (deg 2), sugar = 2, gap = 0
+        // lcm(x^2, xy) = x^2*y
+        // sugar = 2 + (3 - 2) + max(0 - 0, 0) = 3
+        let f = p(&[(1, &[2, 0, 0], 0), (1, &[0, 1, 0], 0)]);
+        let g = p(&[(1, &[1, 1, 0], 0), (1, &[0, 0, 1], 0)]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+        ];
+
+        let sp = SPair::new_pair(0, 1, &gb);
+        assert_eq!(sp.kind, SPairType::SPair);
+        assert_eq!(sp.lcm, m(&[2, 1, 0]));
+        assert_eq!(sp.deg, 3);
+        assert_eq!(sp.comp, 0);
+    }
+
+    #[test]
+    fn test_spair_sugar_with_gap() {
+        // f = 1*e_0 + y^2*e_1 → lead=(1, comp=0), deg=2, gap=2
+        // g = x*e_0 + z*e_1 → lead=(x, comp=0), deg=1, gap=0
+        // lcm(1, x) = x
+        // sugar from i=0: deg_0 + (1 - 0) + max(gap_1 - gap_0, 0) = 2 + 1 + 0 = 3
+        // sugar from i=1: deg_1 + (1 - 1) + max(gap_0 - gap_1, 0) = 1 + 0 + 2 = 3
+        let f = Poly::from_terms(vec![
+            Term::new(1, m(&[0, 0, 0]), 0),
+            Term::new(1, m(&[0, 2, 0]), 1),
+        ]);
+        let g = Poly::from_terms(vec![
+            Term::new(1, m(&[1, 0, 0]), 0),
+            Term::new(1, m(&[0, 0, 1]), 1),
+        ]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+        ];
+
+        let sp01 = SPair::new_pair(0, 1, &gb);
+        let sp10 = SPair::new_pair(1, 0, &gb);
+        assert_eq!(sp01.deg, 3);
+        assert_eq!(sp10.deg, 3);
+    }
+
+    // ===== minimize_pairs_zz tests =====
+
+    #[test]
+    fn test_minimize_creates_gcd_pair() {
+        // Two polynomials with lc's 6 and 4.
+        // syzygy(6, 4) = (2, -3). |u|=2>1, |v|=3>1 → creates GCD pair.
+        let f = p(&[(6, &[2, 0], 0), (1, &[0, 0], 0)]);
+        let g = p(&[(4, &[1, 0], 0), (1, &[0, 0], 0)]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+        ];
+
+        let pairs = vec![SPair::new_pair(0, 1, &gb)];
+        let result = minimize_pairs_zz(pairs, &gb);
+
+        // Should have the regular pair + a GCD pair.
+        let gcd_count = result.iter().filter(|sp| sp.kind == SPairType::GcdZZ).count();
+        let spair_count = result.iter().filter(|sp| sp.kind == SPairType::SPair).count();
+        assert_eq!(gcd_count, 1);
+        assert_eq!(spair_count, 1);
+    }
+
+    #[test]
+    fn test_minimize_no_gcd_pair_when_coeff_divides() {
+        // lc's 6 and 3. syzygy(6, 3) = (1, -2). |u|=1, not > 1 → no GCD pair.
+        let f = p(&[(6, &[2, 0], 0), (1, &[0, 0], 0)]);
+        let g = p(&[(3, &[1, 0], 0), (1, &[0, 0], 0)]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+        ];
+
+        let pairs = vec![SPair::new_pair(0, 1, &gb)];
+        let result = minimize_pairs_zz(pairs, &gb);
+
+        let gcd_count = result.iter().filter(|sp| sp.kind == SPairType::GcdZZ).count();
+        assert_eq!(gcd_count, 0);
+    }
+
+    #[test]
+    fn test_minimize_weak_generators_prunes() {
+        // Two pairs with same LCM. Coeffs: u=2 and u=6.
+        // 2 divides 6, so the pair with coeff 6 is weakly generated.
+        //
+        // To get different syzygy coefficients, we need different leading coefficients.
+        // Pair (0,1): syzygy(a0, a1) gives some u.
+        // Pair (0,2): syzygy(a0, a2) gives some u'.
+        //
+        // Let gb[0] have lc=6, gb[1] have lc=3, gb[2] have lc=1.
+        // All with same lead monomial x^2 so LCMs are all x^2.
+        // syzygy(6, 3) = (1, -2) → u=1
+        // syzygy(6, 1) = (1, -6) → u=1
+        // Both u=1, so neither weakly generates the other since gcd(1)=1 divides 1.
+        // Both kept. Not a great test for pruning.
+        //
+        // Better: gb[0] lc=12, gb[1] lc=4, gb[2] lc=6. Same lead monom.
+        // syzygy(12, 4) = (1, -3) → u=1
+        // syzygy(12, 6) = (1, -2) → u=1
+        // Again both u=1. The issue is that syzygy normalizes so that gcd(lc_i, lc_j)/lc_j
+        // is the coefficient, and with lc_i > lc_j this is often 1.
+        //
+        // Let's try: gb[0] lc=6, gb[1] lc=10, gb[2] lc=15. Same lead monom x.
+        // syzygy(6, 10) = (5, -3) → u=5
+        // syzygy(6, 15) = (5, -2) → u=5
+        // Both u=5, same LCM. gcd(5) = 5 divides 5, so second pair is weakly generated.
+        // Only first pair kept (they tie on |coeff|, so depends on sort order).
+        let f0 = p(&[(6, &[1, 0], 0), (1, &[0, 0], 0)]);
+        let f1 = p(&[(10, &[1, 0], 0), (2, &[0, 0], 0)]);
+        let f2 = p(&[(15, &[1, 0], 0), (3, &[0, 0], 0)]);
+        let gb = vec![
+            GBElem::new(f0, Poly::zero()),
+            GBElem::new(f1, Poly::zero()),
+            GBElem::new(f2, Poly::zero()),
+        ];
+
+        let pairs = vec![
+            SPair::new_pair(0, 1, &gb),
+            SPair::new_pair(0, 2, &gb),
+        ];
+        let result = minimize_pairs_zz(pairs, &gb);
+
+        // Both have same LCM and same |coeff| = 5. First one kept, second weakly generated.
+        // Plus GCD pairs: syzygy(6,10) = (5,-3), |5|>1 and |-3|>1 → GCD pair.
+        // syzygy(6,15) = (5,-2), |5|>1 and |-2|>1 → GCD pair.
+        let spair_count = result.iter().filter(|sp| sp.kind == SPairType::SPair).count();
+        assert_eq!(spair_count, 1, "one of two regular pairs should be pruned");
+    }
+
+    #[test]
+    fn test_find_weak_generators_basic() {
+        // Simple: two pairs, same LCM, coeffs 2 and 6.
+        // 2 divides 6, so only keep the one with coeff 2.
+        let coeffs = vec![6, 2];
+        let lcms = vec![m(&[1, 0]), m(&[1, 0])];
+        let kept = find_weak_generators(&coeffs, &lcms);
+        // After sorting by |coeff|: [1 (coeff=2), 0 (coeff=6)]
+        // Keep idx=1 (coeff=2). Then idx=0 (coeff=6): gcd of kept with dividing LCM = gcd(2) = 2, 6%2=0 → pruned.
+        assert_eq!(kept.len(), 1);
+        assert_eq!(coeffs[kept[0]].abs(), 2);
+    }
+
+    #[test]
+    fn test_find_weak_generators_disjoint_lcm() {
+        // Two pairs with disjoint LCMs: neither divides the other.
+        // Both should be kept regardless of coefficients.
+        let coeffs = vec![2, 6];
+        let lcms = vec![m(&[1, 0]), m(&[0, 1])];
+        let kept = find_weak_generators(&coeffs, &lcms);
+        assert_eq!(kept.len(), 2);
+    }
+
+    // ===== SPairSet tests =====
+
+    #[test]
+    fn test_spairset_basic() {
+        let f = p(&[(1, &[2, 0], 0), (1, &[0, 0], 0)]);
+        let g = p(&[(1, &[1, 1], 0), (1, &[0, 0], 0)]);
+        let h = p(&[(1, &[0, 2], 0), (1, &[0, 0], 0)]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+            GBElem::new(h, Poly::zero()),
+        ];
+
+        let mut set = SPairSet::new();
+        assert!(set.is_empty());
+
+        let pairs = vec![
+            SPair::new_pair(0, 1, &gb),
+            SPair::new_pair(0, 2, &gb),
+            SPair::new_pair(1, 2, &gb),
+        ];
+        set.insert(pairs);
+        assert_eq!(set.len(), 3);
+        assert!(!set.is_empty());
+    }
+
+    #[test]
+    fn test_spairset_next_degree_and_extract() {
+        // Create pairs with different degrees by using different polynomials.
+        // f = x^3 (deg 3), g = y (deg 1), h = x (deg 1)
+        // pair(0,1): lcm = x^3*y, sugar = 3 + (4-3) = 4
+        // pair(0,2): lcm = x^3, sugar = 3 + (3-3) = 3
+        // pair(1,2): lcm = xy, sugar = 1 + (2-1) = 2
+        let f = p(&[(1, &[3, 0], 0), (1, &[0, 0], 0)]);
+        let g = p(&[(1, &[0, 1], 0), (1, &[0, 0], 0)]);
+        let h = p(&[(1, &[1, 0], 0), (1, &[0, 0], 0)]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+            GBElem::new(h, Poly::zero()),
+        ];
+
+        let mut set = SPairSet::new();
+        set.insert(vec![
+            SPair::new_pair(0, 1, &gb),
+            SPair::new_pair(0, 2, &gb),
+            SPair::new_pair(1, 2, &gb),
+        ]);
+
+        assert_eq!(set.next_degree(), Some(2));
+
+        let deg2 = set.extract_degree(2);
+        assert_eq!(deg2.len(), 1);
+        assert_eq!(deg2[0].i, 1);
+        assert_eq!(deg2[0].j, 2);
+        assert_eq!(set.len(), 2);
+
+        assert_eq!(set.next_degree(), Some(3));
+    }
+
+    #[test]
+    fn test_spairset_empty() {
+        let set = SPairSet::new();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+        assert_eq!(set.next_degree(), None);
+    }
+
+    #[test]
+    fn test_spairset_extract_empty_degree() {
+        let f = p(&[(1, &[2, 0], 0), (1, &[0, 0], 0)]);
+        let g = p(&[(1, &[1, 1], 0), (1, &[0, 0], 0)]);
+        let gb = vec![
+            GBElem::new(f, Poly::zero()),
+            GBElem::new(g, Poly::zero()),
+        ];
+
+        let mut set = SPairSet::new();
+        set.insert(vec![SPair::new_pair(0, 1, &gb)]);
+
+        let extracted = set.extract_degree(999);
+        assert!(extracted.is_empty());
+        assert_eq!(set.len(), 1); // original still there
+    }
+}

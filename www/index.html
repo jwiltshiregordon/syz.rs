@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>syz(M) over ZZ[vars]</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>syz(M) over ZZ[vars]</h1>
+        <p class="subtitle">Compute the syzygy module (kernel) of a polynomial matrix over the integers.</p>
+
+        <div class="input-section">
+            <div class="row">
+                <label>Variables (comma-separated):</label>
+                <input type="text" id="vars" value="x, y" placeholder="x, y, z">
+            </div>
+            <div class="row">
+                <label>Matrix dimensions:</label>
+                <input type="number" id="nrows" value="1" min="1" max="10" style="width:60px"> &times;
+                <input type="number" id="ncols" value="3" min="1" max="10" style="width:60px">
+                <button id="resize-btn" onclick="rebuildGrid()">Resize</button>
+            </div>
+            <div id="matrix-container">
+                <!-- dynamically built -->
+            </div>
+            <button id="compute-btn" onclick="compute()">Compute syz(M)</button>
+        </div>
+
+        <div class="examples-section">
+            <h3>Examples</h3>
+            <div class="examples">
+                <button onclick="loadExample('monomial')">x<sup>2</sup>, xy, y<sup>2</sup></button>
+                <button onclick="loadExample('twisted')">Twisted cubic</button>
+                <button onclick="loadExample('coeff')">3x+y, 2x-y</button>
+                <button onclick="loadExample('matrix2x2')">2&times;2 matrix</button>
+                <button onclick="loadExample('katsura')">Katsura-like</button>
+            </div>
+        </div>
+
+        <div id="output-section" class="output-section" style="display:none">
+            <h3>Result</h3>
+            <div id="error-box" class="error-box" style="display:none"></div>
+            <div id="gb-output" style="display:none">
+                <h4>Groebner basis</h4>
+                <pre id="gb-content"></pre>
+            </div>
+            <div id="syz-output" style="display:none">
+                <h4>Syzygies (kernel of M)</h4>
+                <pre id="syz-content"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
